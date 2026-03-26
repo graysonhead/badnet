@@ -16,17 +16,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Build test binaries
-        run: cargo test --no-run
-
-      # Tests require CAP_NET_ADMIN to manage tc rules on loopback.
-      # We grant the capability to the compiled test binaries via setcap
-      # rather than running the entire job as root.
-      - name: Grant CAP_NET_ADMIN to test binaries
-        run: |
-          find target/debug/deps -maxdepth 1 -type f -executable | while read bin; do
-            sudo setcap cap_net_admin+eip "$bin"
-          done
-
+      # Tests call `ip` and `tc` as subprocesses.  File capabilities set via
+      # setcap are not inherited by child processes, so the spawned `ip`/`tc`
+      # binaries would still lack CAP_NET_ADMIN.  Running under sudo on this
+      # ephemeral CI runner is the simplest reliable solution.
       - name: Run tests
-        run: cargo test
+        run: sudo -E $(which cargo) test
