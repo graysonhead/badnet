@@ -1,5 +1,9 @@
 # badnet
 
+[![CI](https://github.com/graysonhead/badnet/actions/workflows/ci.yml/badge.svg)](https://github.com/graysonhead/badnet/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/badnet.svg)](https://crates.io/crates/badnet)
+[![docs.rs](https://docs.rs/badnet/badge.svg)](https://docs.rs/badnet)
+
 Simulate bad network conditions in Rust integration tests using Linux `tc-netem`.
 
 Each `BadNet` instance provisions a loopback address pair wired through a configurable netem qdisc. Traffic sent between the two addresses passes through the impairment rules. Everything is cleaned up when the handle is dropped.
