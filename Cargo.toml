@@ -1,0 +1,10 @@
+[package]
+name = "badnet"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "badnet"
+path = "src/lib.rs"
+
+[dependencies]
