@@ -24,8 +24,9 @@ jobs:
       # rather than running the entire job as root.
       - name: Grant CAP_NET_ADMIN to test binaries
         run: |
-          find target/debug/deps -maxdepth 1 -type f -executable \
-            | xargs sudo setcap cap_net_admin+eip
+          find target/debug/deps -maxdepth 1 -type f -executable | while read bin; do
+            sudo setcap cap_net_admin+eip "$bin"
+          done
 
       - name: Run tests
         run: cargo test
