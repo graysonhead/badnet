@@ -2,6 +2,14 @@
 name = "badnet"
 version = "0.1.0"
 edition = "2021"
+description = """
+Emulation of terrible networks for unit tests and more.
+"""
+authors = ["Grayson Head <grayson@graysonhead.net>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/graysonhead/badnet"
+homepage = "https://github.com/graysonhead/badnet"
 
 [lib]
 name = "badnet"
