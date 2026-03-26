@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build test binaries
+        run: cargo test --no-run
+
+      # Tests require CAP_NET_ADMIN to manage tc rules on loopback.
+      # We grant the capability to the compiled test binaries via setcap
+      # rather than running the entire job as root.
+      - name: Grant CAP_NET_ADMIN to test binaries
+        run: |
+          find target/debug/deps -maxdepth 1 -type f -executable \
+            | xargs sudo setcap cap_net_admin+eip
+
+      - name: Run tests
+        run: cargo test
