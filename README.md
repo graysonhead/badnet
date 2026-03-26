@@ -1,6 +1,5 @@
 # badnet
 
-[![CI](https://github.com/graysonhead/badnet/actions/workflows/ci.yml/badge.svg)](https://github.com/graysonhead/badnet/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/badnet.svg)](https://crates.io/crates/badnet)
 [![docs.rs](https://docs.rs/badnet/badge.svg)](https://docs.rs/badnet)
 
