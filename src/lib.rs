@@ -92,8 +92,60 @@
 //! The default seed is `0`.  Vary the seed when you want statistically
 //! independent runs rather than a fixed pattern.
 //!
+//! # Troubleshooting
+//!
+//! ## Stale state after a crashed run
+//!
+//! [`BadNet`] cleans up its TC rules and loopback addresses in its [`Drop`]
+//! implementation.  However, if the process is killed before `Drop` runs
+//! (e.g. `SIGKILL`, or `Ctrl-C` without a signal handler), the kernel objects
+//! are left behind and the next run will fail with errors like:
+//!
+//! ```text
+//! tc qdisc add dev lo root handle 1: htb default 1` failed: Error: Exclusivity flag on, cannot modify.
+//! ip addr add 10.0.0.1/32 dev lo` failed: Error: ipv4: Address already assigned.
+//! ```
+//!
+//! To clean up manually:
+//!
+//! ```sh
+//! sudo tc qdisc del dev lo root 2>/dev/null; \
+//! sudo ip -4 addr show dev lo | awk '/inet 10\./{print $2}' | \
+//!   xargs -r -I{} sudo ip addr del {} dev lo
+//! ```
+//!
+//! ## Ctrl-C during long-running binaries
+//!
+//! Rust does not run destructors on `SIGINT` by default.  If your binary runs
+//! [`BadNet`] instances for an extended period and users may interrupt it, install
+//! a signal handler that performs an orderly shutdown so that `Drop` is called:
+//!
+//! ```ignore
+//! # fn run() {}
+//! use std::sync::atomic::{AtomicBool, Ordering};
+//! use std::sync::Arc;
+//!
+//! let running = Arc::new(AtomicBool::new(true));
+//! let r = running.clone();
+//! unsafe {
+//!     libc::signal(libc::SIGINT, handle_sigint as libc::sighandler_t);
+//! }
+//! extern "C" fn handle_sigint(_: libc::c_int) { /* set flag, then std::process::exit(0) */ }
+//! ```
+//!
+//! A crate such as [`ctrlc`] makes this straightforward:
+//!
+//! ```ignore
+//! // ctrlc = "3"
+//! ctrlc::set_handler(|| std::process::exit(0)).unwrap();
+//! ```
+//!
+//! Calling [`std::process::exit`] runs destructors, which allows [`BadNet`]'s
+//! `Drop` impl to clean up before the process exits.
+//!
 //! [`tc-netem`]: https://www.man7.org/linux/man-pages/man8/tc-netem.8.html
 //! [`CAP_NET_ADMIN`]: https://man7.org/linux/man-pages/man7/capabilities.7.html
+//! [`ctrlc`]: https://docs.rs/ctrlc
 
 use std::io;
 use std::marker::PhantomData;
@@ -139,6 +191,35 @@ static LO_TC: Mutex<LoTcState> = Mutex::new(LoTcState::new());
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
+/// Runtime-configurable impairment parameters for a [`BadNet`] link.
+///
+/// Construct via `Default` (all zeros / no impairment) and set only the
+/// fields you care about, then pass to [`BadNet::reconfigure`].
+#[derive(Clone, Debug)]
+pub struct BadNetConfig {
+    pub seed: u64,
+    pub delay: Duration,
+    pub loss_rate: f64,
+    pub corrupt_rate: f64,
+    pub duplicate_rate: f64,
+    pub reorder_rate: f64,
+    pub gap: u32,
+}
+
+impl Default for BadNetConfig {
+    fn default() -> Self {
+        Self {
+            seed: 0,
+            delay: Duration::ZERO,
+            loss_rate: 0.0,
+            corrupt_rate: 0.0,
+            duplicate_rate: 0.0,
+            reorder_rate: 0.0,
+            gap: 0,
+        }
+    }
+}
+
 /// A running virtual link backed by loopback addresses and `tc-netem`.
 ///
 /// Dropping the value removes the TC rules and the loopback addresses.
@@ -150,6 +231,8 @@ pub struct BadNet {
     /// TC filter priorities for the two directions.
     filter_prio_fwd: u32,
     filter_prio_rev: u32,
+    /// Current impairment parameters.
+    config: BadNetConfig,
 }
 
 // ── Typestate markers for BadNetBuilder ────────────────────────────────────
@@ -214,6 +297,22 @@ impl BadNet {
     /// Bind sockets to this address to send traffic that will pass through
     /// the configured impairments before reaching [`left_addr`](Self::left_addr).
     pub fn right_addr(&self) -> Ipv4Addr { self.right_addr }
+
+    /// Returns a reference to the current impairment configuration.
+    pub fn config(&self) -> &BadNetConfig { &self.config }
+
+    /// Atomically replace the netem impairment parameters on the live link.
+    ///
+    /// Uses `tc qdisc change` so there is no teardown/rebuild gap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `tc` command fails.
+    pub fn reconfigure(&mut self, config: BadNetConfig) -> io::Result<()> {
+        netem_tc("change", self.class_minor, &config)?;
+        self.config = config;
+        Ok(())
+    }
 }
 
 impl<D, R> BadNetBuilder<D, R> {
@@ -322,14 +421,24 @@ impl<D, R> BadNetBuilder<D, R> {
         let left_addr = Ipv4Addr::new(10, hi, lo, 1);
         let right_addr = Ipv4Addr::new(10, hi, lo, 2);
 
-        // Add addresses to loopback.  On failure we have nothing to undo yet.
+        let config = BadNetConfig {
+            seed: self.seed,
+            delay: self.delay,
+            loss_rate: self.loss_rate,
+            corrupt_rate: self.corrupt_rate,
+            duplicate_rate: self.duplicate_rate,
+            reorder_rate: self.reorder_rate,
+            gap: self.gap,
+        };
+
+        // Add addresses to loopback.
         ip(&["addr", "add", &format!("{left_addr}/32"), "dev", "lo"])?;
         ip(&["addr", "add", &format!("{right_addr}/32"), "dev", "lo"])
             .map_err(|e| { let _ = ip_best_effort_del(left_addr); e })?;
 
         // TC setup under the global lock.
         let (class_minor, filter_prio_fwd, filter_prio_rev) =
-            match setup_tc(left_addr, right_addr, self.delay, self.loss_rate, self.corrupt_rate, self.duplicate_rate, self.reorder_rate, self.gap, self.seed) {
+            match setup_tc(left_addr, right_addr, &config) {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = ip_best_effort_del(left_addr);
@@ -338,7 +447,7 @@ impl<D, R> BadNetBuilder<D, R> {
                 }
             };
 
-        Ok(BadNet { left_addr, right_addr, class_minor, filter_prio_fwd, filter_prio_rev })
+        Ok(BadNet { left_addr, right_addr, class_minor, filter_prio_fwd, filter_prio_rev, config })
     }
 }
 
@@ -416,16 +525,43 @@ impl BadNetBuilder<WithDelay, WithReorder> {
 
 // ── TC setup / teardown ────────────────────────────────────────────────────
 
+/// Issue `tc qdisc <subcommand>` (either `"add"` or `"change"`) for the netem
+/// leaf attached to `class_minor`, using the parameters in `cfg`.
+fn netem_tc(subcommand: &str, class_minor: u32, cfg: &BadNetConfig) -> io::Result<()> {
+    let netem_seed = (cfg.seed & 0xFFFF_FFFF) as u32;
+    let class_parent = format!("1:{class_minor}");
+    let class_handle = format!("{}:", class_minor * 100);
+    let delay_us = format!("{}us", cfg.delay.as_micros());
+    let reorder_pct = format!("{:.4}%", cfg.reorder_rate * 100.0);
+    let loss_pct = format!("{:.4}%", cfg.loss_rate * 100.0);
+    let corrupt_pct = format!("{:.4}%", cfg.corrupt_rate * 100.0);
+    let duplicate_pct = format!("{:.4}%", cfg.duplicate_rate * 100.0);
+    let gap_str = cfg.gap.to_string();
+    let seed_str = netem_seed.to_string();
+    let mut netem_args: Vec<&str> = vec![
+        "qdisc", subcommand, "dev", "lo",
+        "parent", &class_parent,
+        "handle", &class_handle,
+        "netem",
+        "delay", &delay_us,
+        "reorder", &reorder_pct,
+    ];
+    if cfg.gap > 0 {
+        netem_args.extend_from_slice(&["gap", &gap_str]);
+    }
+    netem_args.extend_from_slice(&[
+        "loss", &loss_pct,
+        "corrupt", &corrupt_pct,
+        "duplicate", &duplicate_pct,
+        "seed", &seed_str,
+    ]);
+    tc(&netem_args)
+}
+
 fn setup_tc(
     left: Ipv4Addr,
     right: Ipv4Addr,
-    delay: Duration,
-    loss_rate: f64,
-    corrupt_rate: f64,
-    duplicate_rate: f64,
-    reorder_rate: f64,
-    gap: u32,
-    seed: u64,
+    cfg: &BadNetConfig,
 ) -> io::Result<(u32, u32, u32)> {
     let mut state = LO_TC.lock().unwrap();
 
@@ -452,35 +588,7 @@ fn setup_tc(
          "htb", "rate", "1tbit"])?;
 
     // Netem qdisc as the leaf of our HTB class.
-    // TC netem seed is u32; truncate the user-supplied u64.
-    let netem_seed = (seed & 0xFFFF_FFFF) as u32;
-    let class_parent = format!("1:{class_minor}");
-    let class_handle = format!("{}:", class_minor * 100);
-    let delay_us = format!("{}us", delay.as_micros());
-    let reorder_pct = format!("{:.4}%", reorder_rate * 100.0);
-    let loss_pct = format!("{:.4}%", loss_rate * 100.0);
-    let corrupt_pct = format!("{:.4}%", corrupt_rate * 100.0);
-    let duplicate_pct = format!("{:.4}%", duplicate_rate * 100.0);
-    let gap_str = gap.to_string();
-    let seed_str = netem_seed.to_string();
-    let mut netem_args: Vec<&str> = vec![
-        "qdisc", "add", "dev", "lo",
-        "parent", &class_parent,
-        "handle", &class_handle,
-        "netem",
-        "delay", &delay_us,
-        "reorder", &reorder_pct,
-    ];
-    if gap > 0 {
-        netem_args.extend_from_slice(&["gap", &gap_str]);
-    }
-    netem_args.extend_from_slice(&[
-        "loss", &loss_pct,
-        "corrupt", &corrupt_pct,
-        "duplicate", &duplicate_pct,
-        "seed", &seed_str,
-    ]);
-    tc(&netem_args)?;
+    netem_tc("add", class_minor, cfg)?;
 
     // Steer left→right and right→left traffic into our HTB+netem class.
     add_filter("lo", "1:", filter_prio_fwd, &left, &right, class_minor)?;

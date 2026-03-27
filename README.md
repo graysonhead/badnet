@@ -44,3 +44,23 @@ Linux only. Requires `CAP_NET_ADMIN`. Grant it with `setcap` or run as root:
 ```sh
 sudo setcap cap_net_admin+eip target/debug/deps/<test_binary>
 ```
+
+## Troubleshooting
+
+### Stale state after Ctrl-C or SIGKILL
+
+`BadNet` cleans up TC rules and loopback addresses in its `Drop` implementation. If the process is killed before `Drop` runs, the next run will fail with errors like `Exclusivity flag on` or `Address already assigned`. To clean up manually:
+
+```sh
+sudo tc qdisc del dev lo root 2>/dev/null; \
+sudo ip -4 addr show dev lo | awk '/inet 10\./{print $2}' | \
+  xargs -r -I{} sudo ip addr del {} dev lo
+```
+
+### Ctrl-C in long-running binaries
+
+Rust does not run destructors on `SIGINT` by default. Install a signal handler that calls [`std::process::exit`](https://doc.rust-lang.org/std/process/fn.exit.html) (which does run destructors) to ensure cleanup on interrupt. The [`ctrlc`](https://crates.io/crates/ctrlc) crate makes this easy:
+
+```rust
+ctrlc::set_handler(|| std::process::exit(0)).unwrap();
+```
