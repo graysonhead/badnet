@@ -191,6 +191,22 @@ static LO_TC: Mutex<LoTcState> = Mutex::new(LoTcState::new());
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
+/// Parameters for the Gilbert-Elliot two-state Markov burst-loss model.
+///
+/// - `p` — Good → Bad transition probability per packet, `[0.0, 1.0]`
+/// - `r` — Bad → Good transition probability per packet, `[0.0, 1.0]`
+/// - `h` — reception probability in Bad state (`1-h` = loss in bad state)
+/// - `k` — reception probability in Good state (`1-k` = loss in good state)
+///
+/// Steady-state loss ≈ `p/(p+r) * (1-h) + r/(p+r) * (1-k)`
+#[derive(Clone, Debug)]
+pub struct GilbertElliot {
+    pub p: f64,
+    pub r: f64,
+    pub h: f64,
+    pub k: f64,
+}
+
 /// Runtime-configurable impairment parameters for a [`BadNet`] link.
 ///
 /// Construct via `Default` (all zeros / no impairment) and set only the
@@ -204,6 +220,7 @@ pub struct BadNetConfig {
     pub duplicate_rate: f64,
     pub reorder_rate: f64,
     pub gap: u32,
+    pub loss_ge: Option<GilbertElliot>,
 }
 
 impl Default for BadNetConfig {
@@ -216,6 +233,7 @@ impl Default for BadNetConfig {
             duplicate_rate: 0.0,
             reorder_rate: 0.0,
             gap: 0,
+            loss_ge: None,
         }
     }
 }
@@ -262,6 +280,7 @@ pub struct BadNetBuilder<D = NoDelay, R = NoReorder> {
     duplicate_rate: f64,
     reorder_rate: f64,
     gap: u32,
+    ge_model: Option<GilbertElliot>,
     _state: PhantomData<(D, R)>,
 }
 
@@ -275,6 +294,7 @@ impl Default for BadNetBuilder<NoDelay, NoReorder> {
             duplicate_rate: 0.0,
             reorder_rate: 0.0,
             gap: 0,
+            ge_model: None,
             _state: PhantomData,
         }
     }
@@ -326,6 +346,7 @@ impl<D, R> BadNetBuilder<D, R> {
             duplicate_rate: self.duplicate_rate,
             reorder_rate: self.reorder_rate,
             gap: self.gap,
+            ge_model: self.ge_model,
             _state: PhantomData,
         }
     }
@@ -337,6 +358,21 @@ impl<D, R> BadNetBuilder<D, R> {
     /// default seed is `0`.
     pub fn seed(mut self, seed: u64) -> Self {
         self.seed = seed;
+        self
+    }
+
+    /// Configure a Gilbert-Elliot two-state burst-loss model.
+    ///
+    /// When set, takes priority over the uniform [`loss`](Self::loss) rate.
+    ///
+    /// # Panics
+    /// Panics if any parameter is outside `[0.0, 1.0]`.
+    pub fn loss_ge(mut self, p: f64, r: f64, h: f64, k: f64) -> Self {
+        assert!((0.0..=1.0).contains(&p), "GilbertElliot p must be in [0.0, 1.0]");
+        assert!((0.0..=1.0).contains(&r), "GilbertElliot r must be in [0.0, 1.0]");
+        assert!((0.0..=1.0).contains(&h), "GilbertElliot h must be in [0.0, 1.0]");
+        assert!((0.0..=1.0).contains(&k), "GilbertElliot k must be in [0.0, 1.0]");
+        self.ge_model = Some(GilbertElliot { p, r, h, k });
         self
     }
 
@@ -429,6 +465,7 @@ impl<D, R> BadNetBuilder<D, R> {
             duplicate_rate: self.duplicate_rate,
             reorder_rate: self.reorder_rate,
             gap: self.gap,
+            loss_ge: self.ge_model,
         };
 
         // Add addresses to loopback.
@@ -549,8 +586,20 @@ fn netem_tc(subcommand: &str, class_minor: u32, cfg: &BadNetConfig) -> io::Resul
     if cfg.gap > 0 {
         netem_args.extend_from_slice(&["gap", &gap_str]);
     }
+    let ge_p: String;
+    let ge_r: String;
+    let ge_h: String;
+    let ge_k: String;
+    if let Some(ref ge) = cfg.loss_ge {
+        ge_p = format!("{:.4}%", ge.p * 100.0);
+        ge_r = format!("{:.4}%", ge.r * 100.0);
+        ge_h = format!("{:.4}%", (1.0 - ge.h) * 100.0);
+        ge_k = format!("{:.4}%", (1.0 - ge.k) * 100.0);
+        netem_args.extend_from_slice(&["loss", "gemodel", &ge_p, &ge_r, &ge_h, &ge_k]);
+    } else {
+        netem_args.extend_from_slice(&["loss", &loss_pct]);
+    }
     netem_args.extend_from_slice(&[
-        "loss", &loss_pct,
         "corrupt", &corrupt_pct,
         "duplicate", &duplicate_pct,
         "seed", &seed_str,
