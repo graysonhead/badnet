@@ -74,23 +74,23 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 //!
-//! # Reproducible impairment with seeds
+//! # Reproducible impairment with seeds (requires the `seed` cargo feature)
 //!
 //! `tc-netem` uses an internal PRNG to decide which packets to drop, corrupt,
 //! duplicate, or reorder.  Passing the same seed on the same kernel version
 //! produces an identical sequence of decisions, making test failures
-//! reproducible:
+//! reproducible.  Enable the `seed` Cargo feature to expose this API:
 //!
 //! ```no_run
 //! use badnet::BadNet;
 //!
-//! // Seed 42 produces the same loss decisions on every run.
+//! // Seed 42 produces the same loss decisions on every run (requires feature = "seed").
 //! let net = BadNet::builder().seed(42).loss(0.10).build()?;
 //! # Ok::<(), std::io::Error>(())
 //! ```
 //!
-//! The default seed is `0`.  Vary the seed when you want statistically
-//! independent runs rather than a fixed pattern.
+//! Without the `seed` feature the `seed` argument is never forwarded to
+//! iproute2, keeping the library compatible with older iproute2 versions.
 //!
 //! # Troubleshooting
 //!
@@ -213,6 +213,7 @@ pub struct GilbertElliot {
 /// fields you care about, then pass to [`BadNet::reconfigure`].
 #[derive(Clone, Debug)]
 pub struct BadNetConfig {
+    #[cfg(feature = "seed")]
     pub seed: u64,
     pub delay: Duration,
     pub loss_rate: f64,
@@ -226,6 +227,7 @@ pub struct BadNetConfig {
 impl Default for BadNetConfig {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "seed")]
             seed: 0,
             delay: Duration::ZERO,
             loss_rate: 0.0,
@@ -273,6 +275,7 @@ pub struct BadNet {
 /// and `R` — you will get a type error, not a runtime panic, if you call them
 /// in the wrong order.
 pub struct BadNetBuilder<D = NoDelay, R = NoReorder> {
+    #[cfg(feature = "seed")]
     seed: u64,
     delay: Duration,
     loss_rate: f64,
@@ -287,6 +290,7 @@ pub struct BadNetBuilder<D = NoDelay, R = NoReorder> {
 impl Default for BadNetBuilder<NoDelay, NoReorder> {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "seed")]
             seed: 0,
             delay: Duration::ZERO,
             loss_rate: 0.0,
@@ -339,6 +343,7 @@ impl<D, R> BadNetBuilder<D, R> {
     // Converts between builder states, carrying all field values across.
     fn restate<D2, R2>(self) -> BadNetBuilder<D2, R2> {
         BadNetBuilder {
+            #[cfg(feature = "seed")]
             seed: self.seed,
             delay: self.delay,
             loss_rate: self.loss_rate,
@@ -356,6 +361,9 @@ impl<D, R> BadNetBuilder<D, R> {
     /// Using the same seed on the same kernel version produces a reproducible
     /// impairment pattern, which is useful for deterministic tests.  The
     /// default seed is `0`.
+    ///
+    /// Requires the `seed` cargo feature.
+    #[cfg(feature = "seed")]
     pub fn seed(mut self, seed: u64) -> Self {
         self.seed = seed;
         self
@@ -458,6 +466,7 @@ impl<D, R> BadNetBuilder<D, R> {
         let right_addr = Ipv4Addr::new(10, hi, lo, 2);
 
         let config = BadNetConfig {
+            #[cfg(feature = "seed")]
             seed: self.seed,
             delay: self.delay,
             loss_rate: self.loss_rate,
@@ -565,6 +574,7 @@ impl BadNetBuilder<WithDelay, WithReorder> {
 /// Issue `tc qdisc <subcommand>` (either `"add"` or `"change"`) for the netem
 /// leaf attached to `class_minor`, using the parameters in `cfg`.
 fn netem_tc(subcommand: &str, class_minor: u32, cfg: &BadNetConfig) -> io::Result<()> {
+    #[cfg(feature = "seed")]
     let netem_seed = (cfg.seed & 0xFFFF_FFFF) as u32;
     let class_parent = format!("1:{class_minor}");
     let class_handle = format!("{}:", class_minor * 100);
@@ -574,6 +584,7 @@ fn netem_tc(subcommand: &str, class_minor: u32, cfg: &BadNetConfig) -> io::Resul
     let corrupt_pct = format!("{:.4}%", cfg.corrupt_rate * 100.0);
     let duplicate_pct = format!("{:.4}%", cfg.duplicate_rate * 100.0);
     let gap_str = cfg.gap.to_string();
+    #[cfg(feature = "seed")]
     let seed_str = netem_seed.to_string();
     let mut netem_args: Vec<&str> = vec![
         "qdisc", subcommand, "dev", "lo",
@@ -602,8 +613,9 @@ fn netem_tc(subcommand: &str, class_minor: u32, cfg: &BadNetConfig) -> io::Resul
     netem_args.extend_from_slice(&[
         "corrupt", &corrupt_pct,
         "duplicate", &duplicate_pct,
-        "seed", &seed_str,
     ]);
+    #[cfg(feature = "seed")]
+    netem_args.extend_from_slice(&["seed", &seed_str]);
     tc(&netem_args)
 }
 

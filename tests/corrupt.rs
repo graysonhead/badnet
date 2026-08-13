@@ -8,8 +8,10 @@ const NUM_PACKETS: usize = 500;
 
 #[test]
 fn udp_packet_corrupt() {
-    let net = BadNet::builder()
-        .seed(42)
+    let builder = BadNet::builder();
+    #[cfg(feature = "seed")]
+    let builder = builder.seed(42);
+    let net = builder
         .corrupt(CORRUPT_RATE)
         .build()
         .expect("failed to create BadNet — grant CAP_NET_ADMIN via setcap (see library docs)");

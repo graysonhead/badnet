@@ -11,8 +11,10 @@ const NUM_PACKETS: usize = 500;
 
 #[test]
 fn gilbert_elliot_aggregate_loss() {
-    let net = BadNet::builder()
-        .seed(42)
+    let builder = BadNet::builder();
+    #[cfg(feature = "seed")]
+    let builder = builder.seed(42);
+    let net = builder
         .loss_ge(GE_P, GE_R, GE_H, GE_K)
         .build()
         .expect("failed to create BadNet — grant CAP_NET_ADMIN via setcap");

@@ -8,8 +8,10 @@ const NUM_PACKETS: usize = 500;
 
 #[test]
 fn loss_does_not_affect_unrelated_connection() {
-    let lossy = BadNet::builder()
-        .seed(42)
+    let builder = BadNet::builder();
+    #[cfg(feature = "seed")]
+    let builder = builder.seed(42);
+    let lossy = builder
         .loss(LOSS_RATE)
         .build()
         .expect("failed to create lossy BadNet — grant CAP_NET_ADMIN via setcap (see library docs)");

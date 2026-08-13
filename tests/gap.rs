@@ -13,8 +13,10 @@ const REORDER_RATE: f64 = 1.0;
 
 #[test]
 fn udp_packet_gap() {
-    let net = BadNet::builder()
-        .seed(42)
+    let builder = BadNet::builder();
+    #[cfg(feature = "seed")]
+    let builder = builder.seed(42);
+    let net = builder
         .delay(DELAY)
         .reorder(REORDER_RATE)
         .gap(GAP)

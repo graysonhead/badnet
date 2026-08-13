@@ -7,8 +7,10 @@ const PORT: u16 = 9300;
 const BURST: usize = 200;
 
 fn build_with_loss(rate: f64) -> BadNet {
-    BadNet::builder()
-        .seed(42)
+    let builder = BadNet::builder();
+    #[cfg(feature = "seed")]
+    let builder = builder.seed(42);
+    builder
         .loss(rate)
         .build()
         .expect("failed to create BadNet — grant CAP_NET_ADMIN via setcap (see library docs)")
@@ -41,8 +43,10 @@ fn send_and_count(
 #[test]
 fn config_accessor_reflects_builder() {
     let delay = Duration::from_millis(5);
-    let net = BadNet::builder()
-        .seed(7)
+    let builder = BadNet::builder();
+    #[cfg(feature = "seed")]
+    let builder = builder.seed(7);
+    let net = builder
         .loss(0.25)
         .corrupt(0.10)
         .delay(delay)
@@ -51,6 +55,7 @@ fn config_accessor_reflects_builder() {
         .expect("failed to create BadNet — grant CAP_NET_ADMIN via setcap (see library docs)");
 
     let cfg = net.config();
+    #[cfg(feature = "seed")]
     assert_eq!(cfg.seed, 7);
     assert!((cfg.loss_rate - 0.25).abs() < f64::EPSILON);
     assert!((cfg.corrupt_rate - 0.10).abs() < f64::EPSILON);
